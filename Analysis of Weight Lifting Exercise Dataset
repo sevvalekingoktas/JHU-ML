@@ -1,0 +1,251 @@
+## Introduction
+
+The Weight Lifting dataset consists of sensor data recorded for six participants performing "one set of 10 repititions of the Unilateral Dumbbell Biceps Curl" using either correct (classe = A label) or incorrect (classe = B through E label) technique.  The goal of this analysis is to train a model using only the raw sensor data as the input to predict what class of lifting technique is occuring.  More information is available from the website here: http://groupware.les.inf.puc-rio.br/har (see the section on the Weight Lifting Exercise Dataset).
+
+
+## Data Exploration, Cleaning, and Reduction
+
+The dataset consists of 160 fields, including both raw sensor data and summary statistics of intervals of raw data for four accelerometers.  These accelerometers measure the movement of the upper arm, forearm, belt and dumbbell.  When the record has new\_window="yes", it will also contain summary stats; otherwise the summary stats will be "NA". Over 95% of the records (and all the final testing records) do not contain summary stats so these fields are omitted from the training set.  The record number field was removed because using it resulted in 99.95% accuracy (randomForest) on the validation dataset, but no predictive capability on the testing set for which the record numbers had been changed (its MeanDecreaseGini was an order of magnitude higher then next most important variable).  
+
+All timestamp fields were removed (especially the factor variable) as it could be used to "place" the test records within the larger dataset and use the surrounding records' "classe" label for prediction without any sensor information.  After the record number and timestamp factor variables were removed, the raw\_timestamp\_part\_1 was the most important and resulted in a model that achieves 99.58% accuracy on the validation set but this time achieves perfect classification on the test set.  After removing these variables, the most important variable (again according to a randomForest model) was the num\_window variable, which is cruder way to place the test records within the larger dataset to determine the "classe" as well.  This variable was also removed.
+
+
+```{r load_data, echo=FALSE}
+setwd("C:/Users/smcmillan/Documents/Online\ Courses/JHU_08_Practical_Machine_Learning/Assignments/Project/PracticalML")
+
+training_file = "../pml-training.csv"
+if (file.exists(training_file)) {
+  pml_training_data = read.csv(training_file,
+                               stringsAsFactors = TRUE,
+                               na.strings=c("NA",""),
+                               header = TRUE)
+} else {
+  pml_training_data = read.csv(url("https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv"),
+                               stringsAsFactors = TRUE,
+                               na.strings=c("NA",""),
+                               header = TRUE)
+}
+
+# Note: new_window field in final testing data is "no" for all records.  Chose same records here.
+#pml_training_data = subset(pml_training_data, new_window=="no")
+```
+
+```{r select_columns, echo=FALSE}
+# Only choose the columns with enough "information" (the testing set has zero information for the others, actually)
+allnames = names(pml_training_data)[colMeans(is.na(pml_training_data)) < 0.5]
+
+colnames = allnames[! allnames %in%
+                      c("X", "user_name",
+                        "raw_timestamp_part_1", "raw_timestamp_part_2","cvtd_timestamp",
+                        "new_window", "num_window")]
+colnames
+
+# Note: new_window field in final testing data is "no" for all records.  Chose same records here.
+tmp_data = pml_training_data[,colnames]
+#pml_training_data = subset(pml_training_data, new_window=="no")
+```
+
+After summary stats fields and all non-sensor fields are removed, the resulting dataset contains `r dim(tmp_data)[1]` records with the following `r dim(tmp_data)[2]` fields:
+
+`r colnames`
+
+These records are split into 30% training and 70% validation sets.  Note that my final model using randomForests take a long time to train even with 30% yet they still perform very well.
+
+```{r subset, echo=FALSE}
+# split into training and testing sets,
+# we only need a small portion of the data to get good performance
+set.seed(8088)
+inTrain = createDataPartition(y=tmp_data$classe, p = 0.3, list=FALSE)
+training = tmp_data[ inTrain,]
+testing  = tmp_data[-inTrain,]
+```
+
+## Random Forest Classification Using All Sensor Fields
+
+In this work we start the analysis by using random forest classification via the caret package and setting up the training parameters to perform 10-fold cross validation.  The following is the results of this model training:
+
+```{r random_forest_model, echo=TRUE}
+rf_model_file = "my_rf_model1_new.rds"
+if (file.exists(rf_model_file)){
+  rf_model = readRDS(rf_model_file)
+} else {
+  rf_model = train(classe~., data=training,
+                   method="rf",
+                   trControl=trainControl(method="cv", number=10),
+                   prox=TRUE, allowParallel=TRUE)
+  saveRDS(rf_model, rf_model_file)
+}
+
+#output model results and variable importance
+rf_model
+```
+The following shows the training accuracy of the model which achieves perfect prediction on the training set.
+
+```{r training_acc, echo=FALSE}
+#predict performance using validation set.
+predictions = predict(rf_model, newdata=training)
+confusionMatrix(predictions, training$classe)
+```
+
+The following shows the validation (out of sample) accuracy of the model which I expect to be slightly less than the accuracy on the training data:
+
+```{r validation_acc, echo=FALSE}
+#predict performance using validation set.
+predictions = predict(rf_model, newdata=testing)
+confusionMatrix(predictions, testing$classe)
+```
+
+This model achieves 97% accuracy on the validation set. I should also note that this model achieved perfect classification of the 20 records in the testing data for the programming submission portion of this exercise.
+
+## Reduced Dataset
+
+The following figure shows what the algorithm considers the 30 most important sensor variables (most important at the top):
+
+```{r varimp, echo=FALSE}
+varImpPlot(rf_model$finalModel)
+```
+
+For comparison to the model trained with the full dataset, the 17 most important variables are extract and will be used train other types of models for comparison:
+
+```{r reduced_subset, echo=FALSE}
+colnames2 = c("classe",
+              "roll_belt", "pitch_forearm",
+              "yaw_belt", "magnet_dumbbell_z", "pitch_belt", "magnet_dumbbell_y", "roll_forearm", "accel_dumbbell_y",
+              "accel_forearm_x", "roll_dumbbell", "magnet_dumbbell_x", "accel_dumbbell_z",
+              "magnet_belt_z", "magnet_belt_y", "magnet_forearm_z",
+              "accel_belt_z", "total_accel_dumbbell")
+
+training_reduced = training[,colnames2]
+```
+
+### Random Forest Model (Reduced Dataset)
+
+Using the top 17 most "important" variables from above try a another random forest model.
+
+```{r rf_reduced, echo=FALSE}
+rf_model_file2 = "my_rf_model1_reduced.rds"
+if (file.exists(rf_model_file2)){
+  rf_model2 = readRDS(rf_model_file2)
+} else {
+  rf_model2 = train(classe~.,
+                    data=training_reduced, 
+                    method="rf",
+                    trControl=trainControl(method="cv", number=10),
+                    prox=TRUE,
+                    allowParallel=TRUE)
+  saveRDS(rf_model2, rf_model_file2)
+}
+
+#output model results and variable importance
+rf_model2
+varImpPlot(rf_model2$finalModel)
+
+#predict performance using validation set.
+confusionMatrix(predict(rf_model2, newdata=training_reduced), training_reduced$classe)
+confusionMatrix(predict(rf_model2, newdata=testing), testing$classe)
+```
+
+## Appendix: Comparison to Other Types of Classifiers
+
+### GBM Model
+
+```{r full_gbm, echo=TRUE}
+gbm_model_file = "my_gmb_model1.rds"
+if (file.exists(gbm_model_file)){
+  gbm_model = readRDS(gbm_model_file)
+} else {
+  gbm_model = train(classe~., data=training, method="gbm",distribution="multinomial")
+  saveRDS(gbm_model, gbm_model_file)
+}
+
+#output model results and variable importance
+gbm_model
+
+#predict performance
+confusionMatrix(predict(gbm_model, newdata=training), training$classe)
+confusionMatrix(predict(gbm_model, newdata=testing), testing$classe)
+```
+
+### GBM Model (Reduced Dataset)
+
+```{r reduced_gbm, echo=TRUE}
+gbm_model_file = "my_gmb_model1_reduced.rds"
+if (file.exists(gbm_model_file)){
+  gbm_model = readRDS(gbm_model_file)
+} else {
+  gbm_model = train(classe~., data=training_reduced, method="gbm",distribution="multinomial")
+  saveRDS(gbm_model, gbm_model_file)
+}
+
+#output model results and variable importance
+gbm_model
+
+#predict performance using validation set.
+confusionMatrix(predict(gbm_model, newdata=training_reduced), training_reduced$classe)
+confusionMatrix(predict(gbm_model, newdata=testing), testing$classe)
+```
+
+### Naive Bayes Model (Full Dataset)
+
+```{r full_nb, echo=TRUE}
+nb_model = train(classe~., data=training, method="nb")
+
+#output model results and variable importance
+nb_model
+
+#predict performance using validation set.
+confusionMatrix(predict(nb_model, newdata=training), training$classe)
+confusionMatrix(predict(nb_model, newdata=testing), testing$classe)
+```
+
+### Naive Bayes Model (Reduced Dataset)
+
+```{r reduced_nb, echo=TRUE}
+nb_model = train(classe~., data=training_reduced, method="nb")
+
+#output model results and variable importance
+nb_model
+
+#predict performance using validation set.
+confusionMatrix(predict(nb_model, newdata=training_reduced), training_reduced$classe)
+confusionMatrix(predict(nb_model, newdata=testing), testing$classe)
+```
+
+### Decision Tree Model (Full Dataset)
+
+```{r full_tree, echo=TRUE}
+tree_model = train(classe~., data=training, method="rpart2")
+fancyRpartPlot(tree_model$finalModel)
+
+#output model results and variable importance
+tree_model
+
+#predict performance using validation set.
+confusionMatrix(predict(tree_model, newdata=training), training$classe)
+confusionMatrix(predict(tree_model, newdata=testing), testing$classe)
+```
+
+### Decision Tree Model (Reduced Dataset)
+
+```{r reduced_tree, echo=TRUE}
+tree_model = train(classe~., data=training_reduced, method="rpart2")
+fancyRpartPlot(tree_model$finalModel)
+
+#output model results and variable importance
+tree_model
+
+#predict performance using validation set.
+confusionMatrix(predict(tree_model, newdata=training_reduced), training_reduced$classe)
+confusionMatrix(predict(tree_model, newdata=testing), testing$classe)
+```
+## Appendix: Variable importance
+
+
+Figure: The variable importance when training a random forest model using the record ID, username, and all of the time fields.  Note the record ID is extremely important when predicting the class of the of the out of sample records because consecutive record ID's almost always have the same class.  Indeed this model has perfect out of sample prediction, but when applied to the 20 test samples for the programming submission (with the record IDs reset to 1-20), it only predicts class A.
+
+Figure: with the record ID is removed (and username and timestamp factor variable).  The raw timestamp variable (part 1) and num_window variables have the most predictive power because again it can "place"" the record in the orignal data (albeit a bit more coarsely) and use the class of neighboring records in the training set to predict the class.  It uses the the design of the experiment to predict the classes rather than trying to determine if sensor data itself is predictive.
+## Appendix: Document Environment
+
+```{r env, echo=TRUE}
+sessionInfo()
+```
