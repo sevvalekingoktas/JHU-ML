@@ -1,5 +1,3 @@
-# Practical Machine Learning: Course Project
-by_mcmillan03  
 
 
 
